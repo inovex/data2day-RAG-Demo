@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "data2day rag demo"
+version = "0.1.0"
+description = "The code for perfroming RAG and evaluation on data2day abtracts"
+authors = ["jheinz2 <johanna.heinz@inovex.de>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+langchain = "^0.2.15"
+langchain-community = "^0.2.13"
+langchain-chroma = "^0.1.3"
+langchain-openai = "^0.1.23"
+chainlit = "^1.1.402"
+python-dotenv = "^1.0.1"
+arize-phoenix = "^4.31.0"
+arize-phoenix-evals = "^0.15.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
