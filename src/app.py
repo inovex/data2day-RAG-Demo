@@ -1,6 +1,4 @@
 import os
-import uuid
-from collections import defaultdict
 from time import sleep
 
 import pandas as pd
@@ -17,29 +15,23 @@ from langchain.schema.runnable.config import RunnableConfig
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import AzureChatOpenAI
-from opentelemetry import trace
-from phoenix.evals import HallucinationEvaluator, LiteLLMModel, run_evals, ToxicityEvaluator
+from phoenix.evals import (
+    HallucinationEvaluator,
+    LiteLLMModel,
+    run_evals,
+    ToxicityEvaluator,
+    RelevanceEvaluator,
+    QAEvaluator,
+)
 from phoenix.trace import SpanEvaluations
-from phoenix.trace.dsl.helpers import get_qa_with_reference
 from phoenix.trace.langchain import LangChainInstrumentor
 from vectorstore import create_vectorstore
+from utils import insert_span_ids
 
 load_dotenv("../.env")
 
 
-os.environ["AZURE_API_KEY"] = os.getenv("AZURE_OPENAI_API_KEY")
-os.environ["AZURE_API_BASE"] = os.getenv("AZURE_OPENAI_ENDPOINT")
-os.environ["AZURE_API_VERSION"] = os.getenv("AZURE_OPENAI_VERSION")
-
-
-@cl.on_chat_start
-async def on_chat_start():
-    # start a phoenix session
-    session = px.launch_app()
-
-    # initialize Langchain auto-instrumentation
-    LangChainInstrumentor().instrument()
-
+async def initialize_chain():
     # initialize the Azure OpenAI Model
     model = AzureChatOpenAI(
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
@@ -108,19 +100,54 @@ async def on_chat_start():
     # create the final RAG chain
     chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-    # save chain in user session
+    return chain
+
+
+async def initialize_evaluators():
+    os.environ["AZURE_API_KEY"] = os.getenv("AZURE_OPENAI_API_KEY")
+    os.environ["AZURE_API_BASE"] = os.getenv("AZURE_OPENAI_ENDPOINT")
+    os.environ["AZURE_API_VERSION"] = os.getenv("AZURE_OPENAI_VERSION")
+
+    evaluator_model = LiteLLMModel(
+        model=f'azure/{os.getenv("AZURE_OPENAI_DEPLOYMENT")}'
+    )
+
+    toxicity_evaluator = ToxicityEvaluator(evaluator_model)
+    hallucination_evaluator = HallucinationEvaluator(evaluator_model)
+    relevance_evaluator = RelevanceEvaluator(evaluator_model)
+    qa_evaluator = QAEvaluator(evaluator_model)
+
+    return (
+        toxicity_evaluator,
+        hallucination_evaluator,
+        relevance_evaluator,
+        qa_evaluator,
+    )
+
+
+@cl.on_chat_start
+async def on_chat_start():
+    # start a phoenix session
+    session = px.launch_app()
+
+    # initialize Langchain auto-instrumentation
+    LangChainInstrumentor().instrument()
+
+    # create chain and save it in user session
+    chain = await initialize_chain()
     cl.user_session.set("chain", chain)
 
     # init chat history
     cl.user_session.set("chat_history", [])
 
-    # initialize Phoenix Evaluator and save it in user session
-    evaluator_model = LiteLLMModel(
-        model=f'azure/{os.getenv("AZURE_OPENAI_DEPLOYMENT")}'
+    # initialize Phoenix evaluator and save it in user session
+    toxicity_evaluator, hallucination_evaluator, relevance_evaluator, qa_evaluator = (
+        await initialize_evaluators()
     )
-    toxicity_evaluator = ToxicityEvaluator(evaluator_model)
     cl.user_session.set("toxicity_evaluator", toxicity_evaluator)
-    cl.user_session.set("toxicity_eval_dict", defaultdict(dict))
+    cl.user_session.set("hallucination_evaluator", hallucination_evaluator)
+    cl.user_session.set("relevance_evaluator", relevance_evaluator)
+    cl.user_session.set("qa_evaluator", qa_evaluator)
 
 
 @cl.on_message
@@ -154,14 +181,16 @@ async def on_message(message: cl.Message):
         ]
     )
 
-    # get toxicity evaluator from user session
+    # get evaluators from user session
     toxicity_evaluator = cl.user_session.get("toxicity_evaluator")
+    hallucination_evaluator = cl.user_session.get("hallucination_evaluator")
+    relevance_evaluator = cl.user_session.get("relevance_evaluator")
+    qa_evaluator = cl.user_session.get("qa_evaluator")
 
     eval_dict = {
         "output": [message.content],
         "input": [answer["answer"]],
-        "context": [answer["context"]],
-        "reference": [None],
+        "reference": [answer["context"]],
     }
     eval_df = pd.DataFrame.from_dict(eval_dict)
 
@@ -172,17 +201,30 @@ async def on_message(message: cl.Message):
     spans_dataframe = px.Client().get_spans_dataframe()
 
     # execute evaluation
-    toxicity_eval_df = run_evals(
+    toxicity_eval_df, hallucination_eval_df, relevance_eval_df, qa_eval_df = run_evals(
         dataframe=eval_df,
-        evaluators=[toxicity_evaluator],
+        evaluators=[
+            toxicity_evaluator,
+            hallucination_evaluator,
+            relevance_evaluator,
+            qa_evaluator,
+        ],
         provide_explanation=True,
     )
 
     # extract span ids for logging and displaying evaluations in phoenix
-    toxicity_eval_df[0]["context.span_id"] = spans_dataframe.index[-1]
-    toxicity_eval_df[0].set_index("context.span_id", inplace=True)
-    print(toxicity_eval_df[0]["explanation"][0])
+    toxicity_eval_df = insert_span_ids(toxicity_eval_df, spans_dataframe)
+    print(toxicity_eval_df["explanation"][0])
+    hallucination_eval_df = insert_span_ids(hallucination_eval_df, spans_dataframe)
+    print(hallucination_eval_df["explanation"][0])
+    relevance_eval_df = insert_span_ids(relevance_eval_df, spans_dataframe)
+    print(relevance_eval_df["explanation"][0])
+    qa_eval_df = insert_span_ids(qa_eval_df, spans_dataframe)
+    print(qa_eval_df["explanation"][0])
 
     px.Client().log_evaluations(
-        SpanEvaluations(eval_name="Toxicity", dataframe=toxicity_eval_df[0])
+        SpanEvaluations(eval_name="Hallucination", dataframe=hallucination_eval_df),
+        SpanEvaluations(eval_name="Relevance", dataframe=relevance_eval_df),
+        SpanEvaluations(eval_name="QA Correctness", dataframe=qa_eval_df),
+        SpanEvaluations(eval_name="Toxicity", dataframe=toxicity_eval_df),
     )
