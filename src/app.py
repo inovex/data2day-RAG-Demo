@@ -137,6 +137,11 @@ async def on_chat_start():
     chain = await initialize_chain()
     cl.user_session.set("chain", chain)
 
+    # send welcome message
+    await cl.Message(
+        content="Herzlich Willkommen am Stand von inovex! :wave: Ich habe jetzt alle Dokumente geladen und bin startklar. :rocket: Wie kann ich dir helfen?", author="Chatbot"
+    ).send()
+
     # init chat history
     cl.user_session.set("chat_history", [])
 
