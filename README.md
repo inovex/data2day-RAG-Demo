@@ -30,9 +30,9 @@ chainlit run app.py
 ```
 
 This will start the chainlit server with the chat interface at http://localhost:8000
-as well as the Phoenix server for tracking the chat interactions at http://localhost:6006/.
-
-
+as well as the Phoenix server for tracking and evaluating the chat interactions at http://localhost:6006/.
+If you need more information on how Phoenix traces the conversation and generates evaluations
+you can find the documentation right [here](https://docs.arize.com/phoenix).
 
 ## Disclaimer
 
