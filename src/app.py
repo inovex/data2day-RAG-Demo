@@ -1,4 +1,9 @@
 import os
+import uuid
+from collections import defaultdict
+from time import sleep
+
+import pandas as pd
 from dotenv import load_dotenv
 
 import chainlit as cl
@@ -12,11 +17,19 @@ from langchain.schema.runnable.config import RunnableConfig
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import AzureChatOpenAI
-from phoenix.evals import HallucinationEvaluator
+from opentelemetry import trace
+from phoenix.evals import HallucinationEvaluator, LiteLLMModel, run_evals, ToxicityEvaluator
+from phoenix.trace import SpanEvaluations
+from phoenix.trace.dsl.helpers import get_qa_with_reference
 from phoenix.trace.langchain import LangChainInstrumentor
 from vectorstore import create_vectorstore
 
 load_dotenv("../.env")
+
+
+os.environ["AZURE_API_KEY"] = os.getenv("AZURE_OPENAI_API_KEY")
+os.environ["AZURE_API_BASE"] = os.getenv("AZURE_OPENAI_ENDPOINT")
+os.environ["AZURE_API_VERSION"] = os.getenv("AZURE_OPENAI_VERSION")
 
 
 @cl.on_chat_start
@@ -46,7 +59,7 @@ async def on_chat_start():
         embeddings_deployment=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"),
     )
 
-    # # initialize a retriever from the vectorstore
+    # initialize a retriever from the vectorstore
     retriever = vectorstore.as_retriever()
 
     # system prompt to create history or rather add context
@@ -64,6 +77,7 @@ async def on_chat_start():
             ("human", "{input}"),
         ]
     )
+
     # create history aware retriever
     history_aware_retriever = create_history_aware_retriever(
         model, retriever, contextualize_prompt
@@ -101,8 +115,12 @@ async def on_chat_start():
     cl.user_session.set("chat_history", [])
 
     # initialize Phoenix Evaluator and save it in user session
-    hallucination_evaluator = HallucinationEvaluator(model)
-    cl.user_session.set("hallucination_evaluator", hallucination_evaluator)
+    evaluator_model = LiteLLMModel(
+        model=f'azure/{os.getenv("AZURE_OPENAI_DEPLOYMENT")}'
+    )
+    toxicity_evaluator = ToxicityEvaluator(evaluator_model)
+    cl.user_session.set("toxicity_evaluator", toxicity_evaluator)
+    cl.user_session.set("toxicity_eval_dict", defaultdict(dict))
 
 
 @cl.on_message
@@ -134,4 +152,37 @@ async def on_message(message: cl.Message):
             HumanMessage(content=message.content),
             AIMessage(content=answer["answer"]),
         ]
+    )
+
+    # get toxicity evaluator from user session
+    toxicity_evaluator = cl.user_session.get("toxicity_evaluator")
+
+    eval_dict = {
+        "output": [message.content],
+        "input": [answer["answer"]],
+        "context": [answer["context"]],
+        "reference": [None],
+    }
+    eval_df = pd.DataFrame.from_dict(eval_dict)
+
+    # wait a little bit in case span information hasn't become completely available yet
+    sleep(3)
+
+    # retrieve information about spans
+    spans_dataframe = px.Client().get_spans_dataframe()
+
+    # execute evaluation
+    toxicity_eval_df = run_evals(
+        dataframe=eval_df,
+        evaluators=[toxicity_evaluator],
+        provide_explanation=True,
+    )
+
+    # extract span ids for logging and displaying evaluations in phoenix
+    toxicity_eval_df[0]["context.span_id"] = spans_dataframe.index[-1]
+    toxicity_eval_df[0].set_index("context.span_id", inplace=True)
+    print(toxicity_eval_df[0]["explanation"][0])
+
+    px.Client().log_evaluations(
+        SpanEvaluations(eval_name="Toxicity", dataframe=toxicity_eval_df[0])
     )

@@ -1,5 +1,8 @@
 from langchain_chroma import Chroma
-from langchain_community.document_loaders import DirectoryLoader,UnstructuredMarkdownLoader
+from langchain_community.document_loaders import (
+    DirectoryLoader,
+    UnstructuredMarkdownLoader,
+)
 from langchain_openai import AzureOpenAIEmbeddings
 
 globals()["loaded"] = False
@@ -11,7 +14,7 @@ def load_texts():
         "data",
         glob="**/*.md",
         show_progress=True,
-        loader_cls=UnstructuredMarkdownLoader
+        loader_cls=UnstructuredMarkdownLoader,
     )
     docs = loader.load()
     return docs
@@ -35,9 +38,7 @@ async def create_vectorstore(
         api_key=api_key,
     )
 
-    vectorstore = Chroma(
-        embedding_function=embeddings, persist_directory="./chroma_db"
-    )
+    vectorstore = Chroma(embedding_function=embeddings, persist_directory="./chroma_db")
 
     # make sure it only runs once
     if globals()["loaded"] is False:
@@ -51,9 +52,7 @@ async def create_vectorstore(
 
         # add them
         print("Adding files with embeddings to vectorstore...")
-        vectorstore.add_documents(
-            documents=all_docs
-        )
+        vectorstore.add_documents(documents=all_docs)
         print("Success")
 
         globals()["loaded"] = True

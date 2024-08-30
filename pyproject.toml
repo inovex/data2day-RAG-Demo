@@ -15,6 +15,9 @@ chainlit = "^1.1.402"
 python-dotenv = "^1.0.1"
 arize-phoenix = "^4.31.0"
 arize-phoenix-evals = "^0.15.1"
+unstructured = "^0.15.8"
+markdown = "^3.7"
+litellm = "^1.44.7"
 
 
 [build-system]
